@@ -65,7 +65,7 @@ func NewGrafanaDashboard() ([]byte, error) {
 	return []byte(dashboard), nil
 }
 
-const alerts = `{
+const promAlerts = `{
   prometheusAlerts+:: {
     groups+: [
       {
@@ -92,10 +92,10 @@ const alerts = `{
 `
 
 func NewPrometheusAlerts() ([]byte, error) {
-	return []byte(alerts), nil
+	return []byte(promAlerts), nil
 }
 
-const rules = `{
+const promRules = `{
   prometheusRules+:: {
     groups+: [
       {
@@ -117,5 +117,58 @@ const rules = `{
 `
 
 func NewPrometheusRules() ([]byte, error) {
-	return []byte(rules), nil
+	return []byte(promRules), nil
+}
+
+const lokiAlerts = `{
+  lokiAlerts+:: {
+    groups+: [
+      {
+        name: 'kubernetes-resources',
+        rules: [
+          {
+            alert: 'KubeNodeNotReady',
+            expr: |||
+              sum by (pop) (rate({thing="bob"} [5m])) > 10
+            |||,
+            labels: {
+              severity: 'warning',
+            },
+            annotations: {
+              message: 'Overcommited CPU resource requests on Pods, cannot tolerate node failure.',
+            },
+            'for': '1h',
+          },
+        ],
+      },
+    ],
+  }, 
+}
+`
+
+func NewLokiAlerts() ([]byte, error) {
+	return []byte(lokiAlerts), nil
+}
+
+const lokiRules = `{
+  lokiRules+:: {
+    groups+: [
+      {
+        name: 'example.rules',
+        rules: [
+          {
+            record: 'node:node_memory_utilisation:ratio',
+            expr: |||
+              {thing="bob"} |= "error"
+            |||,
+          },
+        ],
+      },
+    ],
+  }
+}
+`
+
+func NewLokiRules() ([]byte, error) {
+	return []byte(lokiRules), nil
 }

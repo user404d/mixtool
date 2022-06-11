@@ -70,9 +70,12 @@ func TestEvalAlerts(t *testing.T) {
 	_, err = inFile.Write([]byte(testAlertJsonnet))
 	assert.NoError(t, err)
 
-	out, err := GenerateAlerts(inFile.Name(), GenerateOptions{
-		YAML: true,
+	gen := NewGenerator(&GeneratorOptions{
+		Eval: NewDefaultEvaluator(),
 	})
+	out, err := gen.Generate(NewAlertsMixin(&RulesAlertsOptions{DataSource: Prometheus, ImportPath: inFile.Name()}))
 	assert.NoError(t, err)
-	assert.Equal(t, expectedYaml, string(out))
+	formatted, err := JSONtoYaml(out)
+	assert.NoError(t, err)
+	assert.Equal(t, expectedYaml, string(formatted))
 }

@@ -16,7 +16,9 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
+	"io/fs"
 	"io/ioutil"
 	"net/http"
 	"net/url"
@@ -86,21 +88,10 @@ func getMixins() ([]mixin, error) {
 	return mixins, nil
 }
 
-func generateMixin(directory string, jsonnetHome string, mixinURL string, options mixer.GenerateOptions) ([]byte, error) {
-
-	mixinBaseDirectory := filepath.Join(directory)
-
-	err := os.Chdir(mixinBaseDirectory)
+func locateImportFile(jsHome, mixURL string) (string, error) {
+	u, err := url.Parse(mixURL)
 	if err != nil {
-		return nil, fmt.Errorf("Cannot cd into directory %s", err)
-	}
-
-	// generate alerts, rules, grafana dashboards
-	// empty files if not present
-
-	u, err := url.Parse(mixinURL)
-	if err != nil {
-		return nil, fmt.Errorf("url parse %v", err)
+		return "", fmt.Errorf("url parse %v", err)
 	}
 
 	// absolute directory is the same as the download url stripped of the scheme
@@ -108,21 +99,26 @@ func generateMixin(directory string, jsonnetHome string, mixinURL string, option
 	absDirectory = strings.TrimLeft(absDirectory, "/:")
 	absDirectory = strings.TrimSuffix(absDirectory, ".git")
 
-	importFile := filepath.Join(absDirectory, "mixin.libsonnet")
+	importFile := filepath.Join(jsHome, absDirectory, "mixin.libsonnet")
+	if _, err := os.Stat(importFile); errors.Is(err, fs.ErrNotExist) {
+		return "", err
+	}
 
+	return importFile, nil
+}
+
+func generateMixin(directory string, jsonnetHome string, mixinURL string, options *GenerateConfig) (map[string]mixer.Mixin, error) {
 	// generate rules, dashboards, alerts
-	err = generateAll(importFile, options)
+	mixed, err := generateAll(options)
 	if err != nil {
 		return nil, fmt.Errorf("generateAll: %w", err)
 	}
-
-	out, err := generateRulesAlerts(importFile, options)
+	err = writeMixed(options.Dir, mixed)
 	if err != nil {
-		return nil, fmt.Errorf("generateRulesAlerts %w", err)
+		return nil, fmt.Errorf("writeAll: %w", err)
 	}
 
-	return out, nil
-
+	return generateRulesAlerts(options.RulesAlertsCfgs, mixer.NewRulesAlertsMixin)
 }
 
 func putMixin(content []byte, bindAddress string) error {
@@ -214,12 +210,43 @@ func installAction(c *cli.Context) error {
 		return err
 	}
 
-	generateCfg := mixer.GenerateOptions{
-		AlertsFilename: "alerts.yaml",
-		RulesFilename:  "rules.yaml",
-		Directory:      "dashboards_out",
-		JPaths:         []string{"./vendor"},
-		YAML:           true,
+	importPath, err := locateImportFile(path.Join(directory, jsonnetHome), mixinURL)
+	if err != nil {
+		return err
+	}
+	deps := []string{importPath}
+
+	generateCfg := &GenerateConfig{
+		Dir: "out",
+		RulesAlertsCfgs: []*RulesAlertsConfig{
+			{
+				Dst: "loki-rules-alerts.yml",
+				MixinOpts: &mixer.RulesAlertsOptions{
+					DataSource: mixer.Loki,
+					ImportPath: importPath,
+				},
+				GenOpts: &mixer.GeneratorOptions{
+					Eval: mixer.NewEvaluator(deps),
+				},
+				Formatter: mixer.JSONtoYaml,
+			},
+			{
+				Dst: "prom-rules-alerts.yml",
+				MixinOpts: &mixer.RulesAlertsOptions{
+					DataSource: mixer.Prometheus,
+					ImportPath: importPath,
+				},
+				GenOpts: &mixer.GeneratorOptions{
+					Eval: mixer.NewEvaluator(deps),
+				},
+				Formatter: mixer.JSONtoYaml,
+			},
+		},
+		DashCfg: &DashboardsConfig{
+			MixinOpts: &mixer.DashboardsOptions{ImportPath: importPath},
+			GenOpts:   &mixer.GeneratorOptions{Eval: mixer.NewEvaluator(deps)},
+			Formatter: mixer.JSONtoYaml,
+		},
 	}
 
 	rulesAlerts, err := generateMixin(directory, jsonnetHome, mixinURL, generateCfg)
@@ -232,9 +259,11 @@ func installAction(c *cli.Context) error {
 	if c.Bool("put") {
 		bindAddress := c.String("bind-address")
 		// run put requests onto the server
-		err = putMixin(rulesAlerts, bindAddress)
-		if err != nil {
-			return err
+		for _, ra := range rulesAlerts {
+			err = putMixin(ra, bindAddress)
+			if err != nil {
+				return err
+			}
 		}
 	}
 

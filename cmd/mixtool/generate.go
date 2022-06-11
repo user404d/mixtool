@@ -15,13 +15,11 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"os"
-	"path/filepath"
-
-	"github.com/pkg/errors"
+	"path"
 
 	"github.com/monitoring-mixins/mixtool/pkg/mixer"
 	"github.com/urfave/cli"
@@ -40,69 +38,109 @@ func generateCommand() cli.Command {
 	return cli.Command{
 		Name:  "generate",
 		Usage: "Generate manifests from jsonnet input",
+		Flags: append(flags,
+			cli.StringSliceFlag{
+				Name:  "data-sources, s",
+				Usage: "The sources used when evaluating rules and alerts (loki,prometheus)",
+			},
+			cli.StringFlag{
+				Name:  "directory, d",
+				Usage: "The directory where generated outputs are written to",
+				Value: "out",
+			},
+		),
 		Subcommands: cli.Commands{
 			cli.Command{
 				Name:  "alerts",
 				Usage: "Generate Prometheus alerts based on the mixins",
 				Flags: append(flags,
 					cli.StringFlag{
-						Name:  "output-alerts, a",
-						Usage: "The file where Prometheus alerts are written",
+						Name:  "pattern, p",
+						Usage: "Suffix of the file where Prometheus alerts are written",
+						Value: "alerts",
 					},
 				),
-				Action: generateAction(generateAlerts),
+				Action: generateAction(func(cfg *GenerateConfig) error {
+					mixed, err := generateRulesAlerts(cfg.RulesAlertsCfgs, mixer.NewAlertsMixin)
+					if err != nil {
+						return err
+					}
+					return writeMixed(cfg.Dir, mixed)
+				}),
 			},
 			cli.Command{
 				Name:  "rules",
 				Usage: "Generate Prometheus rules based on the mixins",
 				Flags: append(flags,
 					cli.StringFlag{
-						Name:  "output-rules, r",
-						Usage: "The file where Prometheus rules are written",
+						Name:  "pattern, p",
+						Usage: "Suffix of the file where Prometheus rules are written",
+						Value: "rules",
 					},
 				),
-				Action: generateAction(generateRules),
+				Action: generateAction(func(cfg *GenerateConfig) error {
+					mixed, err := generateRulesAlerts(cfg.RulesAlertsCfgs, mixer.NewRulesMixin)
+					if err != nil {
+						return err
+					}
+					return writeMixed(cfg.Dir, mixed)
+				}),
 			},
 			cli.Command{
 				Name:  "dashboards",
 				Usage: "Generate Grafana dashboards based on the mixins",
-				Flags: append(flags,
-					cli.StringFlag{
-						Name:  "directory, d",
-						Usage: "The directory where Grafana dashboards are written to",
-					},
-				),
-				Action: generateAction(generateDashboards),
+				Action: generateAction(func(cfg *GenerateConfig) error {
+					mixed, err := generateDashboards(cfg.DashCfg)
+					if err != nil {
+						return err
+					}
+					return writeMixed(cfg.Dir, mixed)
+				}),
 			},
 			cli.Command{
 				Name:  "all",
-				Usage: "Generate all resources - Prometheus alerts, Prometheus rules and Grafana dashboards",
+				Usage: "Generate all resources - alerts, rules, and Grafana dashboards",
 				Flags: append(flags,
 					cli.StringFlag{
-						Name:  "output-alerts, a",
-						Usage: "The file where Prometheus alerts are written",
-						Value: "alerts.yaml",
-					},
-					cli.StringFlag{
-						Name:  "output-rules, r",
-						Usage: "The file where Prometheus rules are written",
-						Value: "rules.yaml",
-					},
-					cli.StringFlag{
-						Name:  "directory, d",
-						Usage: "The directory where Grafana dashboards are written to",
-						Value: "dashboards_out",
+						Name:  "pattern, p",
+						Usage: "Suffix of the file where alerts are written",
+						Value: "rules-alerts",
 					},
 				),
-				Action: generateAction(generateAll),
+				Action: generateAction(func(cfg *GenerateConfig) error {
+					mixed, err := generateAll(cfg)
+					if err != nil {
+						return nil
+					}
+					return writeMixed(cfg.Dir, mixed)
+				}),
 			},
 		},
 	}
 }
 
-type generatorFunc func(string, mixer.GenerateOptions) error
+type RulesAlertsConfig struct {
+	Dst       string
+	MixinOpts *mixer.RulesAlertsOptions
+	GenOpts   *mixer.GeneratorOptions
+	Formatter mixer.Formatter
+}
 
-func generateAction(generator generatorFunc) cli.ActionFunc {
+type DashboardsConfig struct {
+	MixinOpts *mixer.DashboardsOptions
+	GenOpts   *mixer.GeneratorOptions
+	Formatter mixer.Formatter
+}
+
+type GenerateConfig struct {
+	Dir             string
+	RulesAlertsCfgs []*RulesAlertsConfig
+	DashCfg         *DashboardsConfig
+}
+
+type GenerateAction func(cfg *GenerateConfig) error
+
+func generateAction(generate GenerateAction) cli.ActionFunc {
 	return func(c *cli.Context) error {
 		jPathFlag := c.StringSlice("jpath")
 		filename := c.Args().First()
@@ -115,103 +153,175 @@ func generateAction(generator generatorFunc) cli.ActionFunc {
 			return err
 		}
 
-		alertsFilename := c.String("output-alerts")
-		if alertsFilename == "" || alertsFilename == "-" {
-			alertsFilename = "/dev/stdout"
+		dataSources := c.StringSlice("data-source")
+		if len(dataSources) == 0 {
+			dataSources = []string{"loki", "prometheus"}
 		}
 
-		rulesFilename := c.String("output-rules")
-		if rulesFilename == "" || rulesFilename == "-" {
-			rulesFilename = "/dev/stdout"
+		formatter := mixer.NoFormatter
+		if c.BoolT("yaml") {
+			formatter = mixer.JSONtoYaml
 		}
 
-		generateCfg := mixer.GenerateOptions{
-			AlertsFilename: alertsFilename,
-			RulesFilename:  rulesFilename,
-			Directory:      c.String("directory"),
-			JPaths:         jPathFlag,
-			YAML:           c.BoolT("yaml"),
+		directory := c.String("directory")
+		if directory == "" {
+			directory = "out"
 		}
 
-		return generator(filename, generateCfg)
+		pattern := c.String("pattern")
+		if pattern == "" || pattern == "-" || pattern == "stdout" {
+			pattern = "/dev/stdout"
+		} else {
+			pattern = "%s-" + pattern
+			if c.BoolT("yaml") {
+				pattern += ".yml"
+			} else {
+				pattern += ".json"
+			}
+		}
+
+		raCfgs := make([]*RulesAlertsConfig, 0)
+
+		for _, dataSource := range dataSources {
+			raCfg := &RulesAlertsConfig{
+				GenOpts: &mixer.GeneratorOptions{
+					Eval: mixer.NewEvaluator(jPathFlag),
+				},
+				Formatter: formatter,
+			}
+
+			switch mixer.DataSource(dataSource) {
+			case mixer.Loki:
+				if pattern != "/dev/stdout" {
+					raCfg.Dst = fmt.Sprintf(pattern, "loki")
+				} else {
+					raCfg.Dst = pattern
+				}
+				raCfg.MixinOpts = &mixer.RulesAlertsOptions{
+					DataSource: mixer.Loki,
+					ImportPath: filename,
+				}
+			case mixer.Prometheus:
+				if pattern != "/dev/stdout" {
+					raCfg.Dst = fmt.Sprintf(pattern, "prom")
+				} else {
+					raCfg.Dst = pattern
+				}
+				raCfg.MixinOpts = &mixer.RulesAlertsOptions{
+					DataSource: mixer.Prometheus,
+					ImportPath: filename,
+				}
+			default:
+				continue
+			}
+			raCfgs = append(raCfgs, raCfg)
+		}
+
+		return generate(&GenerateConfig{
+			Dir:             directory,
+			RulesAlertsCfgs: raCfgs,
+			DashCfg: &DashboardsConfig{
+				MixinOpts: &mixer.DashboardsOptions{ImportPath: filename},
+				GenOpts: &mixer.GeneratorOptions{
+					Eval: mixer.NewEvaluator(jPathFlag),
+				},
+				Formatter: formatter,
+			},
+		})
 	}
 }
 
-func generateAlerts(filename string, options mixer.GenerateOptions) error {
-	out, err := mixer.GenerateAlerts(filename, options)
-	if err != nil {
-		return err
-	}
-
-	return ioutil.WriteFile(options.AlertsFilename, out, 0644)
-}
-
-func generateRules(filename string, options mixer.GenerateOptions) error {
-	out, err := mixer.GenerateRules(filename, options)
-	if err != nil {
-		return err
-	}
-	return ioutil.WriteFile(options.RulesFilename, out, 0644)
-}
-
-func generateDashboards(filename string, opts mixer.GenerateOptions) error {
-	if opts.Directory == "" {
-		return errors.New("missing directory flag to tell where to write to")
-	}
-
-	dashboards, err := mixer.GenerateDashboards(filename, opts)
-	if err != nil {
-		return err
-	}
-
-	if err := os.MkdirAll(opts.Directory, 0755); err != nil {
-		return err
-	}
-
-	// Creating this func so that we can make proper use of defer
-	writeDashboard := func(name string, dashboard json.RawMessage) error {
-		file, err := os.Create(filepath.Join(opts.Directory, name))
+func generateRulesAlerts(cfgs []*RulesAlertsConfig, mFactory mixer.MixinBuilder) (map[string]mixer.Mixin, error) {
+	mixed := make(map[string]mixer.Mixin, 0)
+	for _, cfg := range cfgs {
+		mixin := mFactory(cfg.MixinOpts)
+		gen := mixer.NewGenerator(cfg.GenOpts)
+		out, err := gen.Generate(mixin)
 		if err != nil {
-			return errors.Wrap(err, "failed to create dashboard file")
-		}
-		defer file.Close()
-
-		if _, err := file.Write(dashboard); err != nil {
-			return err
+			return nil, err
 		}
 
-		return nil
+		formatted, err := mixer.Mixin(out).ApplyFormatter(cfg.Formatter)
+		if err != nil {
+			return nil, err
+		}
+
+		// deal with stdout as dst
+		if val, ok := mixed[cfg.Dst]; !ok {
+			mixed[cfg.Dst] = formatted
+		} else {
+			mixed[cfg.Dst] = bytes.Join([][]byte{val, formatted}, []byte("----\n"))
+		}
 	}
-
-	for name, dashboard := range dashboards {
-		if err := writeDashboard(name, dashboard); err != nil {
-			return err
-		}
-	}
-
-	return nil
+	return mixed, nil
 }
 
-func generateRulesAlerts(filename string, options mixer.GenerateOptions) ([]byte, error) {
-	out, err := mixer.GenerateRulesAlerts(filename, options)
+func generateDashboards(cfg *DashboardsConfig) (map[string]mixer.Mixin, error) {
+	mixin := mixer.NewDashboardsMixin(cfg.MixinOpts)
+	gen := mixer.NewGenerator(cfg.GenOpts)
+	out, err := gen.Generate(mixin)
 	if err != nil {
 		return nil, err
 	}
-	return out, nil
+
+	var dashboards map[string]json.RawMessage
+	if err := json.Unmarshal(out, &dashboards); err != nil {
+		return nil, err
+	}
+
+	mixed := make(map[string]mixer.Mixin, len(dashboards))
+	for dst, dashboard := range dashboards {
+		mixin, err := mixer.Mixin(dashboard).ApplyFormatter(cfg.Formatter)
+		if err != nil {
+			return nil, err
+		}
+		mixed[dst] = mixin
+	}
+
+	return mixed, nil
 }
 
-func generateAll(filename string, opts mixer.GenerateOptions) error {
-	if err := generateAlerts(filename, opts); err != nil {
+func writeMixed(dir string, mixed map[string]mixer.Mixin) error {
+	err := os.MkdirAll(dir, 0755)
+	if err != nil {
 		return err
 	}
-
-	if err := generateRules(filename, opts); err != nil {
-		return err
-	}
-
-	if err := generateDashboards(filename, opts); err != nil {
-		return err
+	for dst, out := range mixed {
+		if dst != "/dev/stdout" {
+			full := path.Join(dir, dst)
+			err := os.MkdirAll(path.Dir(full), 0755)
+			if err != nil {
+				return err
+			}
+			err = os.WriteFile(full, out, 0644)
+			if err != nil {
+				return err
+			}
+		} else {
+			fmt.Print(string(out))
+		}
 	}
 
 	return nil
+}
+
+func generateAll(cfg *GenerateConfig) (map[string]mixer.Mixin, error) {
+	mixed, err := generateRulesAlerts(cfg.RulesAlertsCfgs, mixer.NewRulesAlertsMixin)
+	if err != nil {
+		return nil, err
+	}
+	dashboards, err := generateDashboards(cfg.DashCfg)
+	if err != nil {
+		return nil, err
+	}
+
+	for dst, val := range dashboards {
+		if other, ok := mixed[dst]; !ok {
+			mixed[path.Join("dashboard", dst)] = val
+		} else {
+			mixed[dst] = bytes.Join([][]byte{val, other}, []byte("----\n"))
+		}
+	}
+
+	return mixed, nil
 }

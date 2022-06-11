@@ -1,0 +1,9 @@
+enable-all: true
+disable:
+  - maligned
+  - golint
+  - scopelint
+  - interfacer
+linters-settings:
+  testpackage:
+    skip-regexp: (export|internal|main)_test\.go

@@ -17,59 +17,41 @@
 package mixer
 
 import (
-	"fmt"
-
 	"github.com/google/go-jsonnet"
+	"github.com/grafana/tanka/pkg/jsonnet/native"
 )
 
-func evaluatePrometheusAlerts(vm *jsonnet.VM, filename string) (string, error) {
-	snippet := fmt.Sprintf(`
-local mixin = (import %q);
-
-if std.objectHasAll(mixin, "prometheusAlerts")
-then mixin.prometheusAlerts
-else {}
-`, filename)
-
-	return vm.EvaluateSnippet("", snippet)
+type Evaluator interface {
+	Exec(mixin Mixin) ([]byte, error)
 }
 
-func evaluatePrometheusRules(vm *jsonnet.VM, filename string) (string, error) {
-	snippet := fmt.Sprintf(`
-local mixin = (import %q);
-
-if std.objectHasAll(mixin, "prometheusRules")
-then mixin.prometheusRules
-else {}
-`, filename)
-
-	return vm.EvaluateSnippet("", snippet)
+type eval struct {
+	vm *jsonnet.VM
 }
 
-func evaluatePrometheusRulesAlerts(vm *jsonnet.VM, filename string) (string, error) {
-	snippet := fmt.Sprintf(`
-local mixin = (import %q);
-
-if std.objectHasAll(mixin, "prometheusRules") && std.objectHasAll(mixin, "prometheusAlerts")
-then mixin.prometheusRules + mixin.prometheusAlerts
-else if std.objectHasAll(mixin, "prometheusRules")
-then mixin.prometheusRules 
-else if std.objectHasAll(mixin, "prometheusAlerts")
-then mixin.prometheusAlerts
-else {}
-`, filename)
-
-	return vm.EvaluateSnippet("", snippet)
+func NewDefaultEvaluator() Evaluator {
+	return &eval{
+		vm: jsonnet.MakeVM(),
+	}
 }
 
-func evaluateGrafanaDashboards(vm *jsonnet.VM, filename string) (string, error) {
-	snippet := fmt.Sprintf(`
-local mixin = (import %q);
+func NewEvaluator(jpath []string) Evaluator {
+	vm := jsonnet.MakeVM()
+	vm.Importer(&jsonnet.FileImporter{
+		JPaths: jpath,
+	})
+	for _, nf := range native.Funcs() {
+		vm.NativeFunction(nf)
+	}
+	return &eval{
+		vm: vm,
+	}
+}
 
-if std.objectHasAll(mixin, "grafanaDashboards")
-then mixin.grafanaDashboards
-else {}
-`, filename)
-
-	return vm.EvaluateSnippet("", snippet)
+func (e eval) Exec(mixin Mixin) ([]byte, error) {
+	out, err := e.vm.EvaluateSnippet("", string(mixin))
+	if err != nil {
+		return nil, err
+	}
+	return []byte(out), nil
 }

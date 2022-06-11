@@ -14,106 +14,20 @@
 
 package mixer
 
-import (
-	"encoding/json"
-
-	"github.com/ghodss/yaml"
-	"github.com/google/go-jsonnet"
-	"github.com/grafana/tanka/pkg/jsonnet/native"
-	"github.com/pkg/errors"
-)
-
-type GenerateOptions struct {
-	AlertsFilename string
-	RulesFilename  string
-	Directory      string
-	JPaths         []string
-	YAML           bool
+type GeneratorOptions struct {
+	Eval Evaluator
 }
 
-func NewVM(jpath []string) *jsonnet.VM {
-	vm := jsonnet.MakeVM()
-	vm.Importer(&jsonnet.FileImporter{
-		JPaths: jpath,
-	})
-	for _, nf := range native.Funcs() {
-		vm.NativeFunction(nf)
-	}
-	return vm
+type Generator struct {
+	e Evaluator
 }
 
-func GenerateAlerts(filename string, opts GenerateOptions) ([]byte, error) {
-	vm := NewVM(opts.JPaths)
-
-	j, err := evaluatePrometheusAlerts(vm, filename)
-	if err != nil {
-		return nil, err
+func NewGenerator(opts *GeneratorOptions) *Generator {
+	return &Generator{
+		e: opts.Eval,
 	}
-
-	output := []byte(j)
-
-	if opts.YAML {
-		output, err = yaml.JSONToYAML(output)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	return output, nil
 }
 
-func GenerateRules(filename string, opts GenerateOptions) ([]byte, error) {
-	vm := NewVM(opts.JPaths)
-
-	j, err := evaluatePrometheusRules(vm, filename)
-	if err != nil {
-		return nil, err
-	}
-
-	output := []byte(j)
-
-	if opts.YAML {
-		output, err = yaml.JSONToYAML(output)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	return output, nil
-}
-
-func GenerateRulesAlerts(filename string, opts GenerateOptions) ([]byte, error) {
-	vm := NewVM(opts.JPaths)
-
-	j, err := evaluatePrometheusRulesAlerts(vm, filename)
-	if err != nil {
-		return nil, err
-	}
-
-	output := []byte(j)
-
-	if opts.YAML {
-		output, err = yaml.JSONToYAML(output)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	return output, nil
-}
-
-func GenerateDashboards(filename string, opts GenerateOptions) (map[string]json.RawMessage, error) {
-	vm := NewVM(opts.JPaths)
-
-	j, err := evaluateGrafanaDashboards(vm, filename)
-	if err != nil {
-		return nil, err
-	}
-
-	var dashboards map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(j), &dashboards); err != nil {
-		return nil, errors.Wrap(err, "failed to unmarshal dashboards")
-	}
-
-	return dashboards, nil
+func (g Generator) Generate(mixin Mixin) ([]byte, error) {
+	return g.e.Exec(mixin)
 }

@@ -23,15 +23,17 @@ import (
 )
 
 type lintConfig struct {
-	Prometheus bool
 	Grafana    bool
+	Loki       bool
+	Prometheus bool
 	Vendor     []string
 }
 
 func lintCommand() cli.Command {
 	config := lintConfig{
-		Prometheus: true,
 		Grafana:    true,
+		Loki:       true,
+		Prometheus: true,
 	}
 
 	return cli.Command{
@@ -43,6 +45,11 @@ func lintCommand() cli.Command {
 				Name:        "grafana",
 				Usage:       "Lint Grafana dashboards against Grafana's schema",
 				Destination: &config.Grafana,
+			},
+			cli.BoolTFlag{
+				Name:        "loki",
+				Usage:       "Lint Loki alerts and rules and their given expressions",
+				Destination: &config.Loki,
 			},
 			cli.BoolTFlag{
 				Name:        "prometheus",
@@ -73,6 +80,7 @@ func lintAction(c *cli.Context) error {
 	options := mixer.LintOptions{
 		JPaths:     jPath,
 		Grafana:    c.BoolT("grafana"),
+		Loki:       c.BoolT("loki"),
 		Prometheus: c.BoolT("prometheus"),
 	}
 

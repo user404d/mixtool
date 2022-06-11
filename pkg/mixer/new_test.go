@@ -33,7 +33,7 @@ func TestNewPrometheusAlerts(t *testing.T) {
 	if err != nil {
 		t.Errorf("failed to create new Prometheus alerts: %v", err)
 	}
-	if string(a) != alerts {
+	if string(a) != promAlerts {
 		t.Error("returned Prometheus alerts is not correct")
 	}
 }
@@ -43,7 +43,7 @@ func TestNewPrometheusRules(t *testing.T) {
 	if err != nil {
 		t.Errorf("failed to create new Prometheus rules: %v", err)
 	}
-	if string(r) != rules {
+	if string(r) != promRules {
 		t.Error("returned Prometheus rules is not correct")
 	}
 }

@@ -15,42 +15,57 @@
 package mixer
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
 	"path"
 
 	"github.com/fatih/color"
-	"github.com/google/go-jsonnet"
 	"github.com/grafana/dashboard-linter/lint"
+	"github.com/grafana/loki/pkg/ruler"
 	"github.com/prometheus/prometheus/model/rulefmt"
+	"gopkg.in/yaml.v3"
 )
 
 type LintOptions struct {
 	JPaths     []string
 	Grafana    bool
+	Loki       bool
 	Prometheus bool
 }
+
+type Linter func(content []byte) []error
 
 func Lint(w io.Writer, filename string, options LintOptions) error {
 	errCount := 0
 
-	if options.Prometheus {
-		vm := NewVM(options.JPaths)
+	if options.Loki {
+		e := NewEvaluator(options.JPaths)
+		opts := &RulesAlertsOptions{DataSource: Loki, ImportPath: filename}
 		errs := make(chan error)
-		go lintPrometheus(filename, vm, errs)
+		go lintRulesAlerts(e, opts, NewLokiLinter(), errs)
+		errCount += printErrs(w, errs)
+	}
+
+	if options.Prometheus {
+		e := NewEvaluator(options.JPaths)
+		opts := &RulesAlertsOptions{DataSource: Prometheus, ImportPath: filename}
+		errs := make(chan error)
+		go lintRulesAlerts(e, opts, NewPrometheusLinter(), errs)
 		errCount += printErrs(w, errs)
 	}
 
 	if options.Grafana {
-		vm := NewVM(options.JPaths)
+		e := NewEvaluator(options.JPaths)
+		opts := &DashboardsOptions{ImportPath: filename}
 		errs := make(chan error)
-		go lintGrafanaDashboards(filename, vm, errs)
+		go lintGrafanaDashboards(e, opts, errs)
 		errCount += printErrs(w, errs)
 	}
 
 	if errCount > 0 {
-		return fmt.Errorf("%d lint errors found", errCount)
+		return fmt.Errorf("%d lint errors found", errCount)
 	}
 	return nil
 }
@@ -64,36 +79,36 @@ func printErrs(w io.Writer, errs <-chan error) int {
 	return errCount
 }
 
-func lintPrometheus(filename string, vm *jsonnet.VM, errsOut chan<- error) {
+func lintRulesAlerts(e Evaluator, opts *RulesAlertsOptions, linter Linter, errsOut chan<- error) {
 	defer close(errsOut)
 
-	j, err := evaluatePrometheusAlerts(vm, filename)
+	j, err := e.Exec(NewAlertsMixin(opts))
 	if err != nil {
 		errsOut <- err
 		return
 	}
 
-	_, errs := rulefmt.Parse([]byte(j))
+	errs := linter(j)
 	for _, err := range errs {
 		errsOut <- err
 	}
 
-	j, err = evaluatePrometheusRules(vm, filename)
+	j, err = e.Exec(NewRulesMixin(opts))
 	if err != nil {
 		errsOut <- err
 		return
 	}
 
-	_, errs = rulefmt.Parse([]byte(j))
+	errs = linter([]byte(j))
 	for _, err := range errs {
 		errsOut <- err
 	}
 }
 
-func lintGrafanaDashboards(filename string, vm *jsonnet.VM, errsOut chan<- error) {
+func lintGrafanaDashboards(e Evaluator, opts *DashboardsOptions, errsOut chan<- error) {
 	defer close(errsOut)
 
-	j, err := evaluateGrafanaDashboards(vm, filename)
+	j, err := e.Exec(NewDashboardsMixin(opts))
 	if err != nil {
 		errsOut <- err
 		return
@@ -131,7 +146,7 @@ func lintGrafanaDashboards(filename string, vm *jsonnet.VM, errsOut chan<- error
 
 		// Lint using the new grafana/dashboard-linter project.
 		config := lint.NewConfigurationFile()
-		if err := config.Load(path.Dir(filename)); err != nil {
+		if err := config.Load(path.Dir(opts.ImportPath)); err != nil {
 			errsOut <- err
 			continue
 		}
@@ -159,4 +174,44 @@ func lintGrafanaDashboards(filename string, vm *jsonnet.VM, errsOut chan<- error
 			}
 		}
 	}
+}
+
+func NewLokiLinter() Linter {
+	return func(content []byte) []error {
+		_, errs := parseLokiAlerts(content)
+		return errs
+	}
+}
+
+func NewPrometheusLinter() Linter {
+	return func(content []byte) []error {
+		_, errs := rulefmt.Parse(content)
+		return errs
+	}
+}
+
+func parseLokiAlerts(content []byte) (*rulefmt.RuleGroups, []error) {
+	var (
+		groups rulefmt.RuleGroups
+		errs   []error
+	)
+
+	decoder := yaml.NewDecoder(bytes.NewReader(content))
+	decoder.KnownFields(true)
+
+	err := decoder.Decode(&groups)
+	// Ignore io.EOF which happens with empty input.
+	if err != nil && err != io.EOF {
+		errs = append(errs, err)
+	}
+	err = yaml.Unmarshal(content, &groups)
+	if err != nil {
+		errs = append(errs, err)
+	}
+
+	if len(errs) > 0 {
+		return nil, errs
+	}
+
+	return &groups, ruler.ValidateGroups(groups.Groups...)
 }

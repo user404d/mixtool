@@ -18,12 +18,36 @@ import (
 	"io/ioutil"
 	"os"
 	"testing"
-
-	"github.com/google/go-jsonnet"
 )
 
+func TestLintLokiAlerts(t *testing.T) {
+	filename, delete := writeTempFile(t, "alerts.jsonnet", lokiAlerts)
+	defer delete()
+
+	e := NewDefaultEvaluator()
+	opts := &RulesAlertsOptions{DataSource: Loki, ImportPath: filename}
+	errs := make(chan error)
+	go lintRulesAlerts(e, opts, NewLokiLinter(), errs)
+	for err := range errs {
+		t.Errorf("linting wrote unexpected output: %v", err)
+	}
+}
+
+func TestLintLokiRules(t *testing.T) {
+	filename, delete := writeTempFile(t, "rules.jsonnet", lokiRules)
+	defer delete()
+
+	e := NewDefaultEvaluator()
+	opts := &RulesAlertsOptions{DataSource: Loki, ImportPath: filename}
+	errs := make(chan error)
+	go lintRulesAlerts(e, opts, NewLokiLinter(), errs)
+	for err := range errs {
+		t.Errorf("linting wrote unexpected output: %v", err)
+	}
+}
+
 func TestLintPrometheusAlerts(t *testing.T) {
-	const testAlerts = alerts + `+
+	const testAlerts = promAlerts + `+
 {
   _config+:: {
      kubeStateMetricsSelector: 'job="ksm"',
@@ -32,30 +56,33 @@ func TestLintPrometheusAlerts(t *testing.T) {
 	filename, delete := writeTempFile(t, "alerts.jsonnet", testAlerts)
 	defer delete()
 
-	vm := jsonnet.MakeVM()
+	e := NewDefaultEvaluator()
+	opts := &RulesAlertsOptions{DataSource: Prometheus, ImportPath: filename}
 	errs := make(chan error)
-	go lintPrometheus(filename, vm, errs)
+	go lintRulesAlerts(e, opts, NewPrometheusLinter(), errs)
 	for err := range errs {
 		t.Errorf("linting wrote unexpected output: %v", err)
 	}
 }
 
 func TestLintPrometheusRules(t *testing.T) {
-	filename, delete := writeTempFile(t, "rules.jsonnet", rules)
+	filename, delete := writeTempFile(t, "rules.jsonnet", promRules)
 	defer delete()
 
-	vm := jsonnet.MakeVM()
+	e := NewDefaultEvaluator()
+	opts := &RulesAlertsOptions{DataSource: Prometheus, ImportPath: filename}
 	errs := make(chan error)
-	go lintPrometheus(filename, vm, errs)
+	go lintRulesAlerts(e, opts, NewPrometheusLinter(), errs)
 	for err := range errs {
 		t.Errorf("linting wrote unexpected output: %v", err)
 	}
 }
 
 func TestLintGrafana(t *testing.T) {
-	vm := jsonnet.MakeVM()
+	e := NewDefaultEvaluator()
+	opts := &DashboardsOptions{ImportPath: "lint_test_dashboard.json"}
 	errs := make(chan error)
-	go lintGrafanaDashboards("lint_test_dashboard.json", vm, errs)
+	go lintGrafanaDashboards(e, opts, errs)
 	for err := range errs {
 		t.Errorf("linting wrote unexpected output: %v", err)
 	}
@@ -67,7 +94,7 @@ func writeTempFile(t *testing.T, pattern string, contents string) (filename stri
 		t.Errorf("failed to create temp file: %v", err)
 	}
 
-	if _, err := f.WriteString(rules); err != nil {
+	if _, err := f.WriteString(contents); err != nil {
 		t.Errorf("failed to write rules.jsonnet to disk: %v", err)
 	}
 
