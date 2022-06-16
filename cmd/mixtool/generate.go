@@ -153,7 +153,7 @@ func generateAction(generate GenerateAction) cli.ActionFunc {
 			return err
 		}
 
-		dataSources := c.StringSlice("data-source")
+		dataSources := c.StringSlice("data-sources")
 		if len(dataSources) == 0 {
 			dataSources = []string{"loki", "prometheus"}
 		}
