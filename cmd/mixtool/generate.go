@@ -33,22 +33,20 @@ func generateCommand() cli.Command {
 		cli.BoolTFlag{
 			Name: "yaml, y",
 		},
+		cli.StringSliceFlag{
+			Name:  "data-sources, s",
+			Usage: "The sources used when evaluating rules and alerts (loki,prometheus)",
+		},
+		cli.StringFlag{
+			Name:  "directory, d",
+			Usage: "The directory where generated outputs are written to",
+			Value: "out",
+		},
 	}
 
 	return cli.Command{
 		Name:  "generate",
 		Usage: "Generate manifests from jsonnet input",
-		Flags: append(flags,
-			cli.StringSliceFlag{
-				Name:  "data-sources, s",
-				Usage: "The sources used when evaluating rules and alerts (loki,prometheus)",
-			},
-			cli.StringFlag{
-				Name:  "directory, d",
-				Usage: "The directory where generated outputs are written to",
-				Value: "out",
-			},
-		),
 		Subcommands: cli.Commands{
 			cli.Command{
 				Name:  "alerts",
