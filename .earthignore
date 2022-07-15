@@ -1,0 +1,9 @@
+.circleci/
+scripts/
+
+.header
+golangci.yml
+LICENSE
+mods.go
+README.md
+renovate.json
