@@ -17,7 +17,7 @@ test:
 build:
     FROM +deps
     COPY Makefile VERSION *.go ./
-    RUN make build
+    RUN --mount=type=cache,target=/mixtool/.cache/go-build make build
     SAVE ARTIFACT _output/linux/amd64/mixtool AS LOCAL build/mixtool
     SAVE ARTIFACT _output/linux/amd64/mixtool mixtool
     SAVE IMAGE --cache-hint
