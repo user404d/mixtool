@@ -11,12 +11,12 @@ deps:
 
 test:
     FROM +deps
-    COPY *.go ./
+    COPY Makefile *.go ./
     RUN make test
 
 build:
     FROM +deps
-    COPY *.go ./
+    COPY Makefile *.go ./
     RUN make build
     SAVE ARTIFACT _output/linux/amd64/mixtool AS LOCAL build/mixtool
     SAVE ARTIFACT _output/linux/amd64/mixtool mixtool
