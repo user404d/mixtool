@@ -3,7 +3,7 @@ WORKDIR /mixtool
 
 deps:
     COPY go.mod go.sum ./
-    RUN go mod download -x
+    RUN --mount=type=cache,target=/go/pkg/mod go mod download
     # Output these back in case go mod download changes them.
     SAVE ARTIFACT go.mod AS LOCAL go.mod
     SAVE ARTIFACT go.sum AS LOCAL go.sum
@@ -11,12 +11,12 @@ deps:
 
 test:
     FROM +deps
-    COPY . ./
+    COPY *.go ./
     RUN make test
 
 build:
     FROM +deps
-    COPY . ./
+    COPY *.go ./
     RUN make build
     SAVE ARTIFACT _output/linux/amd64/mixtool AS LOCAL build/mixtool
     SAVE ARTIFACT _output/linux/amd64/mixtool mixtool
