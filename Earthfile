@@ -1,9 +1,16 @@
 FROM golang:1.17
-WORKDIR /mixtool
+
+ARG WORKDIR="/mixtool"
+WORKDIR $WORKDIR
+
+ARG GOMODCACHE="/go/pkg/mod"
+ENV GOMODCACHE=$GOMODCACHE
+ARG GOCACHE="$WORKDIR/.cache/go-build"
+ENV GOCACHE=$GOCACHE
 
 deps:
     COPY go.mod go.sum ./
-    RUN --mount=type=cache,target=/go/pkg/mod go mod download
+    RUN go mod download
     # Output these back in case go mod download changes them.
     SAVE ARTIFACT go.mod AS LOCAL go.mod
     SAVE ARTIFACT go.sum AS LOCAL go.sum
@@ -11,13 +18,13 @@ deps:
 
 test:
     FROM +deps
-    COPY Makefile *.go ./
+    COPY . .
     RUN make test
 
 build:
     FROM +deps
-    COPY Makefile VERSION go.mod go.sum *.go ./
-    RUN --mount=type=cache,target=/mixtool/.cache/go-build make build
-    SAVE ARTIFACT _output/linux/amd64/mixtool AS LOCAL build/mixtool
-    SAVE ARTIFACT _output/linux/amd64/mixtool mixtool
+    COPY go.mod go.sum Makefile VERSION .
+    COPY --dir cmd pkg .
+    RUN --mount=type=cache,target=$GOCACHE make build
+    SAVE ARTIFACT _output/linux/amd64/mixtool mixtool AS LOCAL build/mixtool
     SAVE IMAGE --cache-hint
